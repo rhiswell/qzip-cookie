@@ -1,0 +1,8 @@
+calgary*
+*.gz
+.gdb_history
+peda*
+*.o
+main
+test
+qzpipe
