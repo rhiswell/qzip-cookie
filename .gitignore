@@ -1,8 +1,12 @@
 calgary*
 *.gz
 .gdb_history
+core.*
 peda*
 *.o
 main
 test
 qzpipe
+hugefile
+*.out
+.workspace.vim
