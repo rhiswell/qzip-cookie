@@ -48,7 +48,7 @@ gzip_fopen(const char *fname, const char *mode)
 }
 // \end gzip cookie
 
-// \begin qzip cookie
+// \begin buffer manager
 typedef struct {
     char            *buf;
     unsigned int    size;
@@ -86,7 +86,9 @@ bufm_destor(bufm_t *bufm)
 {
     free(bufm->buf);
 }
+// \end buffer manager
 
+// \begin qzip cookie
 typedef struct {
     QzSession_T       qz_sess;
     QzSessionParams_T qz_sess_params;
@@ -112,6 +114,8 @@ qzip_cookie_write(void *cookie, const char *buf, size_t size)
 
     char *dst = (char *)malloc(dst_len);
     assert(dst != NULL);
+
+    fprintf(stderr, "qzip_cookie_write: new buf with size %d\n", size);
 
     while (!done) {
         rc = qzCompress(qz_sess, src, &src_len, dst, &dst_len, 1);
