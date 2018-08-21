@@ -1,5 +1,7 @@
 calgary*
 *.gz
+*.qz
+*.qz_s
 .gdb_history
 core.*
 peda*

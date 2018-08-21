@@ -1,13 +1,13 @@
 
 CC=gcc
-QAT_INCLUDE		= -I$(ICP_ROOT)/quickassist/include 		\
-				  -I$(ICP_ROOT)/quickassist/include/dc 		\
-				  -I$(ICP_ROOT)/quickassist/lookaside/access_layer/include
+QAT_INCLUDE	= -I$(ICP_ROOT)/quickassist/include 		\
+		  -I$(ICP_ROOT)/quickassist/include/dc 		\
+		  -I$(ICP_ROOT)/quickassist/lookaside/access_layer/include
 USDM_INCLUDE	= -I$(ICP_ROOT)/quickassit/utilities/libusdm_drv
 QATZIP_INCLUDE 	= -I$(QATZIP_ROOT)/include -I$(QATZIP_ROOT)/src
-CFLAGS 			= $(QAT_INCLUDE) $(USDM_INCLUDE) $(QATZIP_INCLUDE) -DQZ_COOKIE_DEBUG -DQATZIP_DEBUG -g
-#CFLAGS 			= $(QAT_INCLUDE) $(USDM_INCLUDE) $(QATZIP_INCLUDE)
-LDLIBS 			= -lz -lqatzip
+CFLAGS 		= $(QAT_INCLUDE) $(USDM_INCLUDE) $(QATZIP_INCLUDE) -DQZ_COOKIE_DEBUG -DQATZIP_DEBUG -g
+#CFLAGS		= $(QAT_INCLUDE) $(USDM_INCLUDE) $(QATZIP_INCLUDE)
+LDLIBS 		= -lz -lqatzip
 
 all: test qzpipe
 

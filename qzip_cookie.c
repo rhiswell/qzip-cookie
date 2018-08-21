@@ -29,7 +29,6 @@ gzip_cookie_write(void *cookie, const char *buf, size_t size)
 {
     return gzwrite((gzFile)cookie, (voidpc)buf, (unsigned)size);
 }
-
 static int
 gzip_cookie_close(void *cookie)
 {
@@ -432,6 +431,5 @@ qzip_stream_hook(FILE *fp, const char *mode)
     qz_stream_cookie->fp = fp;
 
     return fopencookie(qz_stream_cookie, mode, qzip_stream_write2_funcs);
-
 }
 // \end qzip stream cookie
