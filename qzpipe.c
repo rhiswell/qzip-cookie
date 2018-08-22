@@ -19,7 +19,6 @@ static int def_legacy(FILE *fin, FILE *fout)
     do {
         bytes_read = fread(buf, 1, CHUNK, fin);
         fwrite(buf, 1, bytes_read, fout_);
-        fprintf(stderr, "def_legacy: %d bytes were written to buffer\n", bytes_read);
     } while (bytes_read == CHUNK);
 
     return 0;

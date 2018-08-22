@@ -8,7 +8,12 @@ peda*
 *.o
 main
 test
+*_test
 qzpipe
 hugefile
 *.out
 .workspace.vim
+*.perf
+*.data
+oprofile_data/
+*.opreport

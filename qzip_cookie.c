@@ -13,14 +13,8 @@
 #include "qatzip.h"
 #include "qatzip_internal.h"
 
-#define PAGESIZE (4*1024)
+#define MAXDATA  QC_MAXDATA
 #define HUGEPAGE (2*1024*1024)
-
-#ifdef QZ_COOKIE_DEBUG
-#define DEBUG_INFO(fmt, args...) { printf("DEBUG: " fmt "\n", ##args); }
-#else
-#define DEBUG_INFO(fmt, args...) { do {} while(0); }
-#endif
 
 // \begin gzip cookie
 // Details of cookie can refer to `man fopencookie`
@@ -95,6 +89,9 @@ typedef struct {
     FILE              *fp;
 } qzip_cookie_t;
 
+// Fixed data buffer to eliminate overhead of buffer allocation and free
+static char data_buf[MAXDATA];
+
 // Refer to QATzip/utils/qzip.c:doProcessFile
 static ssize_t
 qzip_cookie_write(void *cookie, const char *buf, size_t size)
@@ -103,8 +100,9 @@ qzip_cookie_write(void *cookie, const char *buf, size_t size)
     QzSession_T *qz_sess = &(qz_cookie->qz_sess);
     const char *src = buf;
     unsigned int src_len = size;
-    // Ensure output buffer is big enough to push input buffer
-    unsigned int dst_len = (size < PAGESIZE) ? PAGESIZE : size;
+    assert(size <= MAXDATA);    // Will cause overflow error if compressed data
+                                // is bigger than expectation
+    unsigned int dst_len = MAXDATA;
     unsigned int done = 0;
     unsigned int buf_processed = 0;
     unsigned int buf_remaining = size;
@@ -112,10 +110,9 @@ qzip_cookie_write(void *cookie, const char *buf, size_t size)
     unsigned int valid_dst_len = dst_len;
     int rc = QZ_FAIL;
 
-    char *dst = (char *)malloc(dst_len);
-    assert(dst != NULL);
+    char *dst = &data_buf;
 
-    fprintf(stderr, "qzip_cookie_write: new buf with size %d\n", size);
+    QC_DEBUG("qzip_cookie_write: new buf at %x (%d Bytes)\n", buf, size);
 
     while (!done) {
         rc = qzCompress(qz_sess, src, &src_len, dst, &dst_len, 1);
@@ -123,8 +120,8 @@ qzip_cookie_write(void *cookie, const char *buf, size_t size)
         if (rc != QZ_OK &&
             rc != QZ_BUF_ERROR &&
             rc != QZ_DATA_ERROR) {
-            QZ_ERROR("qzip_cookie_write: failed with error: %d\n", rc);
-            QZ_ERROR("qzip_cookie_write: src_len %d, dst_len %d\n", src_len, dst_len);
+            QC_ERROR("qzip_cookie_write: failed with error: %d\n", rc);
+            QC_ERROR("qzip_cookie_write: src_len %d, dst_len %d\n", src_len, dst_len);
             break;
         }
 
@@ -140,8 +137,6 @@ qzip_cookie_write(void *cookie, const char *buf, size_t size)
         src_len = buf_remaining;
         dst_len = valid_dst_len;
     }
-
-    free(dst);
 
     return buf_processed;
 }
@@ -175,7 +170,6 @@ qzip_cookie_close2(void *cookie)
     free(qz_cookie);
 
     return 0;
-
 }
 
 static cookie_io_functions_t qzip_write_funcs = {
@@ -193,18 +187,91 @@ FILE *
 qzip_fopen(const char *fname, const char *mode)
 {
     qzip_cookie_t *qz_cookie = (qzip_cookie_t *)calloc(1, sizeof(qzip_cookie_t));
+    int rc;
+
+    // \begin initialization and setup for QAT's compression service
+    QzSession_T   *qz_sess = &(qz_cookie->qz_sess);
+    QzSessionParams_T *qz_sess_params = &(qz_cookie->qz_sess_params);
+
+    // For simplicity, initializations and setup function calls are not required
+    // to obtain compression services. If the initialization and setup functions
+    // are not called before compression or decompression requests, then they
+    // will be called with default arguments from within the compression or
+    // decompression functions. This results in serveral legal calling scenarios,
+    // see QATzip/include/qatzip.h for more details. For better understanding,
+    // we use scenario 1 here, described blow.
+    //
+    // Scenario 1 - all functions explicilty invoked by caller, with all arguments
+    // provided
+    //
+    // qzInit(&sess_c, sw_backup);
+    // qzSetupSession(&sess_c, &params);
+    // qzCompress(&sess, src, &src_len, dest, &dest_len, 1);
+    // qzDecompress(&sess, src, &src_len, dest, &dest_len);
+    // qzTeardownSession(&sess);
+    // qzClose(&sess);
+
+    // 1 means use software as backup when QAT hardware is unavailable
+    rc = qzInit(qz_sess, 1);
+    assert(QZ_OK == rc);
+
+    // Default parameters:
+    // - dynamic or static huffman headers: fully dynamic
+    // - compression or decompression: both
+    // - deflate, deflate with GZip or deflate with GZip ext: Gzip ext
+    // - Compression level 1..9: 1 that is twice faster than others and a little
+    //   compression ratio loss
+    // - Nanosleep between poll [0..100] (0 means no sleep): 10
+    // - Maximum forks permitted in current thread (0 means no forking permitted): 3
+    // - Use software as backup or not: yes
+    // - Default buffer size (power of 2 - 4K, 8K, 16K, 32K, 64K, 128K): 64KB
+    // - Stream buffer size (1K..2M-5K): 64KB
+    // - Default threshold of compression service's input size: 1KB. For SW
+    //   failover, if the size of input request less than the threshold, QATzip
+    //   will route the request to software.
+    rc = qzGetDefaults(qz_sess_params);
+    assert(QZ_OK == rc);
+
+    rc = qzSetupSession(qz_sess, qz_sess_params);
+    assert(QZ_OK == rc);
+    // \end initialization and setup for QAT's compression service
+
     qz_cookie->fp = fopen(fname, mode);
     assert(qz_cookie->fp != NULL);
-    return fopencookie(qz_cookie, mode, qzip_write_funcs);
+
+    FILE *cookie_fp = fopencookie(qz_cookie, mode, qzip_write_funcs);
+
+    // Disable cookie_fp's stream buffer
+    rc = setvbuf(cookie_fp, NULL, _IONBF, 0);
+    assert(0 == rc);
+
+    return cookie_fp;
 }
 
 FILE *
 qzip_hook(FILE *fp, const char *mode)
 {
     qzip_cookie_t *qz_cookie = (qzip_cookie_t *)calloc(1, sizeof(qzip_cookie_t));
+    QzSession_T   *qz_sess = &(qz_cookie->qz_sess);
+    QzSessionParams_T *qz_sess_params = &(qz_cookie->qz_sess_params);
+    int rc;
+
+    rc = qzInit(qz_sess, 1);
+    assert(QZ_OK == rc);
+    rc = qzGetDefaults(qz_sess_params);
+    assert(QZ_OK == rc);
+    rc = qzSetupSession(qz_sess, qz_sess_params);
+    assert(QZ_OK == rc);
+
     qz_cookie->fp = fp;
 
-    return fopencookie(qz_cookie, mode, qzip_write2_funcs);
+    FILE *cookie_fp = fopencookie(qz_cookie, mode, qzip_write_funcs);
+
+    // Disable cookie_fp's stream buffer
+    rc = setvbuf(cookie_fp, NULL, _IONBF, 0);
+    assert(0 == rc);
+
+    return cookie_fp;
 }
 // \end qzip cookie
 
@@ -235,7 +302,7 @@ qzip_stream_cookie_write(void *cookie, const char *buf, size_t size)
     unsigned int bytes_written;
     int rc;
 
-    QZ_DEBUG("qzip_stream_cookie_write: new buf (%d)\n", size);
+    QC_DEBUG("qzip_stream_cookie_write: new buf (%d)\n", size);
 
     do {
         qz_strm->in     = src + consumed;
@@ -243,13 +310,13 @@ qzip_stream_cookie_write(void *cookie, const char *buf, size_t size)
         qz_strm->in_sz  = (input_left > slice_sz) ? slice_sz : input_left;
         qz_strm->out_sz = qz_strm_bufm->size - qz_strm_bufm->consumed;
 
-        QZ_DEBUG("qzip_stream_cookie_write: before: to_in %7d (%7d pending), remain %7d (%7d pending)\n",
-                 qz_strm->in_sz, qz_strm->pending_in, qz_strm->out_sz, qz_strm->pending_out);
+        QC_DEBUG("qzip_stream_cookie_write: before: to_in %7d (%7d pending), remain %7d (%7d pending)\n",
+                qz_strm->in_sz, qz_strm->pending_in, qz_strm->out_sz, qz_strm->pending_out);
 
         rc = qzCompressStream(qz_sess, qz_strm, 0);
         if (rc != QZ_OK) {
-            QZ_ERROR("qzip_stream_cookie_write: failed with error: %d\n", rc);
-            QZ_ERROR("qzip_stream_cookie_write: input_left %d, output_left %d\n",
+            QC_ERROR("qzip_stream_cookie_write: failed with error: %d\n", rc);
+            QC_ERROR("qzip_stream_cookie_write: input_left %d, output_left %d\n",
                      input_left, qz_strm_bufm->size - qz_strm_bufm->consumed);
             break;
         }
@@ -261,10 +328,10 @@ qzip_stream_cookie_write(void *cookie, const char *buf, size_t size)
             input_left = src_len - consumed;
         }
 
-        QZ_DEBUG("qzip_stream_cookie_write:  after: in_ed %7d (%7d pending), output %7d (%7d pending)\n",
-                 qz_strm->in_sz, qz_strm->pending_in, qz_strm->out_sz, qz_strm->pending_out);
-        QZ_DEBUG("qzip_stream_cookie_write:  after: total consumed %d, input_left %d\n",
-                 consumed, input_left);
+        QC_DEBUG("qzip_stream_cookie_write:  after: in_ed %7d (%7d pending), output %7d (%7d pending)\n",
+                qz_strm->in_sz, qz_strm->pending_in, qz_strm->out_sz, qz_strm->pending_out);
+        QC_DEBUG("qzip_stream_cookie_write:  after: total consumed %d, input_left %d\n",
+                consumed, input_left);
 
         // When internal buffer is full, do data flush then reset buffer cursor
         if (qz_strm_bufm->consumed == qz_strm_bufm->size) {
@@ -272,7 +339,7 @@ qzip_stream_cookie_write(void *cookie, const char *buf, size_t size)
         }
     } while (input_left);
 
-    QZ_DEBUG("qzip_stream_cookie_write: end buf\n");
+    QC_DEBUG("qzip_stream_cookie_write: end buf\n");
 
     return consumed;
 }
@@ -296,17 +363,17 @@ qzip_stream_cookie_close(void *cookie)
         qz_strm->in_sz = 0;
         qz_strm->out_sz = qz_strm_bufm->size - qz_strm_bufm->consumed;
 
-        QZ_DEBUG("qzip_stream_cookie_close: before: to_in %7d (%7d pending), remain %7d (%7d pending)\n",
-                 qz_strm->in_sz, qz_strm->pending_in, qz_strm->out_sz, qz_strm->pending_out);
+        QC_DEBUG("qzip_stream_cookie_close: before: to_in %7d (%7d pending), remain %7d (%7d pending)\n",
+                qz_strm->in_sz, qz_strm->pending_in, qz_strm->out_sz, qz_strm->pending_out);
 
         int rc = qzCompressStream(qz_sess, qz_strm, 1);
         if (rc != QZ_OK) {
-            QZ_ERROR("qzip_stream_cookie_close: failed with error: %d\n", rc);
+            QC_ERROR("qzip_stream_cookie_close: failed with error: %d\n", rc);
             break;
         }
 
-        QZ_DEBUG("qzip_stream_cookie_close:  after: in_ed %7d (%7d pending), output %7d (%7d pending)\n",
-                 qz_strm->in_sz, qz_strm->pending_in, qz_strm->out_sz, qz_strm->pending_out);
+        QC_DEBUG("qzip_stream_cookie_close:  after: in_ed %7d (%7d pending), output %7d (%7d pending)\n",
+                qz_strm->in_sz, qz_strm->pending_in, qz_strm->out_sz, qz_strm->pending_out);
 
         qz_strm_bufm->consumed  += qz_strm->out_sz;
 
@@ -376,17 +443,17 @@ qzip_stream_cookie_close2(void *cookie)
         qz_strm->in_sz = 0;
         qz_strm->out_sz = qz_strm_bufm->size - qz_strm_bufm->consumed;
 
-        QZ_DEBUG("qzip_stream_cookie_close: before: to_in %7d (%7d pending), remain %7d (%7d pending)\n",
-                 qz_strm->in_sz, qz_strm->pending_in, qz_strm->out_sz, qz_strm->pending_out);
+        QC_DEBUG("qzip_stream_cookie_close: before: to_in %7d (%7d pending), remain %7d (%7d pending)\n",
+                qz_strm->in_sz, qz_strm->pending_in, qz_strm->out_sz, qz_strm->pending_out);
 
         int rc = qzCompressStream(qz_sess, qz_strm, 1);
         if (rc != QZ_OK) {
-            QZ_ERROR("qzip_stream_cookie_close: failed with error: %d\n", rc);
+            QC_ERROR("qzip_stream_cookie_close: failed with error: %d\n", rc);
             break;
         }
 
-        QZ_DEBUG("qzip_stream_cookie_close:  after: in_ed %7d (%7d pending), output %7d (%7d pending)\n",
-                 qz_strm->in_sz, qz_strm->pending_in, qz_strm->out_sz, qz_strm->pending_out);
+        QC_DEBUG("qzip_stream_cookie_close:  after: in_ed %7d (%7d pending), output %7d (%7d pending)\n",
+                qz_strm->in_sz, qz_strm->pending_in, qz_strm->out_sz, qz_strm->pending_out);
 
         qz_strm_bufm->consumed  += qz_strm->out_sz;
 
