@@ -12,6 +12,9 @@
 #include <assert.h>
 #include <sys/time.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
+#include <sys/types.h>
+#include <fcntl.h>
 
 #define MAXDATA QC_MAXDATA
 #define MAXPATH (1024)
@@ -45,6 +48,27 @@ void display_stats(run_time_t *run_time, unsigned int insize)
     printf("Throughput:     %9.3lf Mbit/s\n", throughput);
 }
 
+void display_speedup(run_time_t *run_time_old, run_time_t *run_time_new)
+{
+    unsigned long us_begin_old, us_end_old;
+    unsigned long us_begin_new, us_end_new;
+    double us_diff_old, us_diff_new;
+
+    us_begin_old = run_time_old->time_s.tv_sec * 1e6 + run_time_old->time_s.tv_usec;
+    us_end_old   = run_time_old->time_e.tv_sec * 1e6 + run_time_old->time_e.tv_usec;
+    us_diff_old  = (us_end_old - us_begin_old);
+
+    us_begin_new = run_time_new->time_s.tv_sec * 1e6 + run_time_new->time_s.tv_usec;
+    us_end_new   = run_time_new->time_e.tv_sec * 1e6 + run_time_new->time_e.tv_usec;
+    us_diff_new  = (us_end_new - us_begin_new);
+
+    assert(us_diff_old > 0);
+    assert(us_diff_new > 0);
+    double speedup = (us_diff_old / us_diff_new);
+
+    printf("Speedup:        %9.3lf x\n", speedup);
+}
+
 off_t file_size(const char *fpath)
 {
     struct stat fstat;
@@ -62,7 +86,7 @@ static void def(FILE *fin, FILE *fout)
 
     do {
         bytes_read = fread(fdata_buf, 1, MAXDATA, fin);
-        printf("Reading input file (%d Bytes) to buffer at %x\n", bytes_read, fdata_buf);
+        QC_DEBUG("Reading input file (%d Bytes) to buffer at %x\n", bytes_read, fdata_buf);
         bytes_written = fwrite(fdata_buf, 1, bytes_read, fout);
         assert(bytes_written == bytes_read);
     } while (bytes_read == MAXDATA);
@@ -70,7 +94,6 @@ static void def(FILE *fin, FILE *fout)
 
 void test_gzip(const char *fpath)
 {
-
     FILE *fin = fopen(fpath, "r");
     assert(fin != NULL);
 
@@ -109,6 +132,56 @@ void test_qzip(const char *fpath)
     display_stats(&run_time, file_size(fpath));
 }
 
+// This function will write compressed data to stderr
+void test_qzip2(const char *fpath, int chunk_size)
+{
+    run_time_t base_run_time;
+    run_time_t my_run_time;
+
+    // Use mmap to eliminate overhead of kernel-to-user memory copy
+    int fd = open(fpath, O_RDONLY);
+    assert(fd >= 0);
+
+    size_t fsize = file_size(fpath);
+    assert(fsize > 0);
+
+    char *addr = mmap(NULL, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
+    assert(addr != NULL);
+
+    size_t bytes_to_write, bytes_written, off;
+
+    // \begin bench baseline
+    // `qzip_hook` has disabled IO stream's internal buffer so that call to `fwrite`
+    // will directly deliver data-to-write to `qzip_write` and then processed by QAT
+    FILE *fout = qzip_hook(stderr, "w");
+    assert(fout != NULL);
+    gettimeofday(&base_run_time.time_s, NULL);
+    for (off = 0; off < fsize; off += chunk_size) {
+        bytes_to_write = ((fsize - off) < chunk_size) ? (fsize - off) : chunk_size;
+        bytes_written  = fwrite(addr + off, 1, bytes_to_write, fout);
+        assert(bytes_written == bytes_to_write);
+    }
+    fclose(fout);
+    gettimeofday(&base_run_time.time_e, NULL);
+    display_stats(&base_run_time, fsize);
+    // \end bench baseline
+
+    // \begin bench my version
+    FILE *my_fout = my_qzip_hook(stderr, "w");
+    assert(my_fout != NULL);
+    gettimeofday(&my_run_time.time_s, NULL);
+    for (off = 0; off < fsize; off += chunk_size) {
+        bytes_to_write = ((fsize - off) < chunk_size) ? (fsize - off) : chunk_size;
+        bytes_written  = fwrite(addr + off, 1, bytes_to_write, my_fout);
+    }
+    fclose(my_fout);
+    gettimeofday(&my_run_time.time_e, NULL);
+    display_stats(&my_run_time, fsize);
+    // \end bench my version
+
+    display_speedup(&base_run_time, &my_run_time);
+}
+
 void test_qzip_stream(const char *fpath)
 {
     FILE *fin = fopen(fpath, "r");
@@ -133,29 +206,36 @@ void print_usage(const char *progname)
 {
     printf("Usage: %s [options] <file_to_test>\n", progname);
     printf("Program options:\n");
-    printf("    -c  --case <INT>    Test specified cookie API\n");
+    printf("    -c  --case <INT>    Test specified cookie API (default 0 that means all)\n");
+    printf("    -s  --chunksz <INT> Size to write (default 64)\n");
     printf("    -h  --help          This message\n");
 }
 
 int main(int argc, char **argv)
 {
-    int  test_case = 0;
-    char *fin_path = NULL;
+    int  test_case  = 0;
+    int  chunk_size = 64;    // Bytes
+    char *fin_path  = NULL;
 
     // \begin parse commandline args
     int opt;
 
     static struct option long_options[] = {
-        {"case", required_argument, 0, 'c'},
-        {"help", no_argument,       0, 'h'},
-        {0,      0,                 0,  0 }
+        {"case",    required_argument, 0, 'c'},
+        {"chunksz", required_argument, 0, 's'},
+        {"help",    no_argument,       0, 'h'},
+        {0,         0,                 0,  0 }
     };
 
-    while ((opt = getopt_long(argc, argv, "f:c:h", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "f:c:s:h", long_options, NULL)) != -1) {
 
         switch (opt) {
             case 'c':
                 test_case = atoi(optarg);
+                break;
+            case 's':
+                chunk_size = atoi(optarg);
+                assert(chunk_size > 0);
                 break;
             case 'h':
             case '?':
@@ -182,6 +262,9 @@ int main(int argc, char **argv)
             break;
         case 3:
             test_qzip_stream(fin_path);
+            break;
+        case 4:
+            test_qzip2(fin_path, chunk_size);
             break;
         case 0:
         default:

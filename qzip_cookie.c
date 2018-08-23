@@ -141,6 +141,54 @@ qzip_cookie_write(void *cookie, const char *buf, size_t size)
     return buf_processed;
 }
 
+static ssize_t
+my_qzip_cookie_write(void *cookie, const char *buf, size_t size)
+{
+    qzip_cookie_t *qz_cookie = (qzip_cookie_t *)(cookie);
+    QzSession_T *qz_sess = &(qz_cookie->qz_sess);
+    const char *src = buf;
+    unsigned int src_len = size;
+    assert(size <= MAXDATA);    // Will cause overflow error if compressed data
+                                // is bigger than expectation
+    unsigned int dst_len = MAXDATA;
+    unsigned int done = 0;
+    unsigned int buf_processed = 0;
+    unsigned int buf_remaining = size;
+    unsigned int bytes_written = 0;
+    unsigned int valid_dst_len = dst_len;
+    int rc = QZ_FAIL;
+
+    char *dst = &data_buf;
+
+    QC_DEBUG("qzip_cookie_write: new buf at %x (%d Bytes)\n", buf, size);
+
+    while (!done) {
+        rc = qzCompress(qz_sess, src, &src_len, dst, &dst_len, 1);
+
+        if (rc != QZ_OK &&
+            rc != QZ_BUF_ERROR &&
+            rc != QZ_DATA_ERROR) {
+            QC_ERROR("qzip_cookie_write: failed with error: %d\n", rc);
+            QC_ERROR("qzip_cookie_write: src_len %d, dst_len %d\n", src_len, dst_len);
+            break;
+        }
+
+        bytes_written = fwrite(dst, 1, dst_len, qz_cookie->fp);
+        assert(bytes_written == dst_len);
+
+        buf_processed += src_len;
+        buf_remaining -= src_len;
+        if (buf_remaining == 0) {
+            done = 1;
+        }
+        src += src_len;
+        src_len = buf_remaining;
+        dst_len = valid_dst_len;
+    }
+
+    return buf_processed;
+}
+
 static int
 qzip_cookie_close(void *cookie)
 {
@@ -265,7 +313,38 @@ qzip_hook(FILE *fp, const char *mode)
 
     qz_cookie->fp = fp;
 
-    FILE *cookie_fp = fopencookie(qz_cookie, mode, qzip_write_funcs);
+    FILE *cookie_fp = fopencookie(qz_cookie, mode, qzip_write2_funcs);
+
+    // Disable cookie_fp's stream buffer
+    rc = setvbuf(cookie_fp, NULL, _IONBF, 0);
+    assert(0 == rc);
+
+    return cookie_fp;
+}
+
+static cookie_io_functions_t my_qzip_writes_funcs = {
+    .write = my_qzip_cookie_write,
+    .close = qzip_cookie_close2
+};
+
+FILE *
+my_qzip_hook(FILE *fp, const char *mode)
+{
+    qzip_cookie_t *qz_cookie = (qzip_cookie_t *)calloc(1, sizeof(qzip_cookie_t));
+    QzSession_T   *qz_sess = &(qz_cookie->qz_sess);
+    QzSessionParams_T *qz_sess_params = &(qz_cookie->qz_sess_params);
+    int rc;
+
+    rc = qzInit(qz_sess, 1);
+    assert(QZ_OK == rc);
+    rc = qzGetDefaults(qz_sess_params);
+    assert(QZ_OK == rc);
+    rc = qzSetupSession(qz_sess, qz_sess_params);
+    assert(QZ_OK == rc);
+
+    qz_cookie->fp = fp;
+
+    FILE *cookie_fp = fopencookie(qz_cookie, mode, my_qzip_writes_funcs);
 
     // Disable cookie_fp's stream buffer
     rc = setvbuf(cookie_fp, NULL, _IONBF, 0);
