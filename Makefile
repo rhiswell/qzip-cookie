@@ -6,7 +6,7 @@ QAT_INCLUDE	= -I$(ICP_ROOT)/quickassist/include 		\
 USDM_INCLUDE	= -I$(ICP_ROOT)/quickassit/utilities/libusdm_drv
 QATZIP_INCLUDE 	= -I$(QATZIP_ROOT)/include -I$(QATZIP_ROOT)/src
 #CFLAGS		= $(QAT_INCLUDE) $(USDM_INCLUDE) $(QATZIP_INCLUDE) -DQZ_COOKIE_DEBUG -g
-CFLAGS		= $(QAT_INCLUDE) $(USDM_INCLUDE) $(QATZIP_INCLUDE)
+CFLAGS		= $(QAT_INCLUDE) $(USDM_INCLUDE) $(QATZIP_INCLUDE) -g
 LDLIBS		= -lz -lqatzip
 
 all: qzip_cookie_test qzpipe

@@ -17,3 +17,4 @@ hugefile
 *.data
 oprofile_data/
 *.opreport
+*.old

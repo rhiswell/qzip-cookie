@@ -141,6 +141,8 @@ qzip_cookie_write(void *cookie, const char *buf, size_t size)
     return buf_processed;
 }
 
+static char *data_buf_pinned = NULL;
+
 static ssize_t
 my_qzip_cookie_write(void *cookie, const char *buf, size_t size)
 {
@@ -158,7 +160,7 @@ my_qzip_cookie_write(void *cookie, const char *buf, size_t size)
     unsigned int valid_dst_len = dst_len;
     int rc = QZ_FAIL;
 
-    char *dst = &data_buf;
+    char *dst = data_buf_pinned;
 
     QC_DEBUG("qzip_cookie_write: new buf at %x (%d Bytes)\n", buf, size);
 
@@ -277,6 +279,9 @@ qzip_fopen(const char *fname, const char *mode)
     // - Default threshold of compression service's input size: 1KB. For SW
     //   failover, if the size of input request less than the threshold, QATzip
     //   will route the request to software.
+    // - req_cnt_thrshold (1..4): 4 as default
+    // - wait_cnt_thrshold: when previous try (call icp_sal_userStartProcess in qzInit)
+    //   failed, wait for specific number of call before retry device open. Default is 8.
     rc = qzGetDefaults(qz_sess_params);
     assert(QZ_OK == rc);
 
@@ -349,6 +354,9 @@ my_qzip_hook(FILE *fp, const char *mode)
     // Disable cookie_fp's stream buffer
     rc = setvbuf(cookie_fp, NULL, _IONBF, 0);
     assert(0 == rc);
+
+    data_buf_pinned = qzMalloc(128*1024, NODE_0, PINNED_MEM);
+    assert(NULL != data_buf_pinned);
 
     return cookie_fp;
 }

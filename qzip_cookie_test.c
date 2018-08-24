@@ -16,6 +16,8 @@
 #include <sys/types.h>
 #include <fcntl.h>
 
+#include "qatzip.h"
+
 #define MAXDATA QC_MAXDATA
 #define MAXPATH (1024)
 
@@ -133,7 +135,7 @@ void test_qzip(const char *fpath)
 }
 
 // This function will write compressed data to stderr
-void test_qzip2(const char *fpath, int chunk_size)
+void bench_qzip(const char *fpath, int chunk_size)
 {
     run_time_t base_run_time;
     run_time_t my_run_time;
@@ -182,6 +184,35 @@ void test_qzip2(const char *fpath, int chunk_size)
     display_speedup(&base_run_time, &my_run_time);
 }
 
+// This function will write compressed data to stderr
+void test_my_qzip(const char *fpath, int chunk_size)
+{
+    run_time_t my_run_time;
+
+    // Use mmap to eliminate overhead of kernel-to-user memory copy
+    int fd = open(fpath, O_RDONLY);
+    assert(fd >= 0);
+
+    size_t fsize = file_size(fpath);
+    assert(fsize > 0);
+
+    char *addr = mmap(NULL, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
+    assert(addr != NULL);
+
+    size_t bytes_to_write, bytes_written, off;
+
+    FILE *my_fout = my_qzip_hook(stderr, "w");
+    assert(my_fout != NULL);
+    gettimeofday(&my_run_time.time_s, NULL);
+    for (off = 0; off < fsize; off += chunk_size) {
+        bytes_to_write = ((fsize - off) < chunk_size) ? (fsize - off) : chunk_size;
+        bytes_written  = fwrite(addr + off, 1, bytes_to_write, my_fout);
+    }
+    fclose(my_fout);
+    gettimeofday(&my_run_time.time_e, NULL);
+    display_stats(&my_run_time, fsize);
+}
+
 void test_qzip_stream(const char *fpath)
 {
     FILE *fin = fopen(fpath, "r");
@@ -214,7 +245,7 @@ void print_usage(const char *progname)
 int main(int argc, char **argv)
 {
     int  test_case  = 0;
-    int  chunk_size = 64;    // Bytes
+    int  chunk_size = (64*1024);    // 64 KB
     char *fin_path  = NULL;
 
     // \begin parse commandline args
@@ -253,6 +284,8 @@ int main(int argc, char **argv)
     }
     // \end parse commandline args
 
+    // case 1..3: read from file and write into file at the same directory
+    // case 4..5: read from mmapped file and write into stderr
     switch (test_case) {
         case 1:
             test_gzip(fin_path);
@@ -264,7 +297,10 @@ int main(int argc, char **argv)
             test_qzip_stream(fin_path);
             break;
         case 4:
-            test_qzip2(fin_path, chunk_size);
+            test_my_qzip(fin_path, chunk_size);
+            break;
+        case 5:
+            bench_qzip(fin_path, chunk_size);
             break;
         case 0:
         default:
