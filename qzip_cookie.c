@@ -16,6 +16,8 @@
 #define MAXDATA  QC_MAXDATA
 #define HUGEPAGE (2*1024*1024)
 
+run_time_list_node_t *run_time_list_head = NULL;
+
 // \begin gzip cookie
 // Details of cookie can refer to `man fopencookie`
 static ssize_t
@@ -160,12 +162,20 @@ my_qzip_cookie_write(void *cookie, const char *buf, size_t size)
     unsigned int valid_dst_len = dst_len;
     int rc = QZ_FAIL;
 
-    char *dst = data_buf_pinned;
+    //char *dst = data_buf_pinned;
+    char *dst = &data_buf;
 
     QC_DEBUG("qzip_cookie_write: new buf at %x (%d Bytes)\n", buf, size);
 
     while (!done) {
+        run_time_list_node_t *run_time_node = LIST_NEW();
+        assert(run_time_node != NULL);
+
+        gettimeofday(&(run_time_node->rtime.time_s), NULL);
         rc = qzCompress(qz_sess, src, &src_len, dst, &dst_len, 1);
+        gettimeofday(&(run_time_node->rtime.time_e), NULL);
+
+        LIST_ADD(run_time_list_head, run_time_node);
 
         if (rc != QZ_OK &&
             rc != QZ_BUF_ERROR &&

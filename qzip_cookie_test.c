@@ -24,11 +24,6 @@
 static char fpath_buf[MAXPATH];
 static char fdata_buf[MAXDATA];
 
-typedef struct {
-    struct timeval time_s;
-    struct timeval time_e;
-} run_time_t;
-
 static run_time_t run_time;
 
 // Refer to QATzip/utils/qzip.c:displayStats
@@ -44,7 +39,7 @@ void display_stats(run_time_t *run_time, unsigned int insize)
 
     assert(0 != us_diff);
     assert(0 != insize);
-    double throughput = (insize * 8) / us_diff;     // in MBit/s
+    double throughput = ((double)insize * 8) / us_diff;     // in MBit/s
 
     printf("Time taken:     %9.3lf ms\n", us_diff / 1000);
     printf("Throughput:     %9.3lf Mbit/s\n", throughput);
@@ -184,6 +179,30 @@ void bench_qzip(const char *fpath, int chunk_size)
     display_speedup(&base_run_time, &my_run_time);
 }
 
+extern run_time_list_node_t *run_time_list_head;
+
+void display_stats_chained(run_time_list_node_t *rtime_list_head, unsigned int insize)
+{
+
+    unsigned long us_begin = 0;
+    unsigned long us_end   = 0;
+    double us_diff         = 0;
+    run_time_list_node_t *curr_tnode = NULL;
+
+    LIST_FOR(run_time_list_head, curr_tnode) {
+        us_begin = curr_tnode->rtime.time_s.tv_sec * 1e6 + curr_tnode->rtime.time_s.tv_usec;
+        us_end   = curr_tnode->rtime.time_e.tv_sec * 1e6 + curr_tnode->rtime.time_e.tv_usec;
+        us_diff += (us_end - us_begin);
+    }
+
+    assert(0 != us_diff);
+    assert(0 != insize);
+    double throughput = ((double)insize * 8) / us_diff;     // in MBit/s
+
+    printf("Time taken:     %9.3lf ms\n", us_diff / 1000);
+    printf("Throughput:     %9.3lf Mbit/s\n", throughput);
+}
+
 // This function will write compressed data to stderr
 void test_my_qzip(const char *fpath, int chunk_size)
 {
@@ -211,6 +230,7 @@ void test_my_qzip(const char *fpath, int chunk_size)
     fclose(my_fout);
     gettimeofday(&my_run_time.time_e, NULL);
     display_stats(&my_run_time, fsize);
+    display_stats_chained(run_time_list_head, fsize);
 }
 
 void test_qzip_stream(const char *fpath)
